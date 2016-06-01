@@ -1,6 +1,7 @@
 ﻿using AzureCraftAPI.Model;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -27,98 +28,54 @@ namespace AzureCraftAPI.Service
             return singleton;
         }
 
-        public PartitionInfo GetPartitionInfo(string lastname)
+        public PartitionInfo GetPartitionInfo(string name)
         {
             // Create a new webrequest to hit backend service
-            WebRequest request = WebRequest.Create($"{baseURI}?lastname={lastname}");
+            WebRequest request = WebRequest.Create($"{baseURI}?lastname={name}");
             WebResponse response = request.GetResponse();
 
             Dictionary<string, string> content = ParseResponse(response);
 
-            PartitionInfo partitionInfo = new PartitionInfo();
-            var key = lastname[0].ToString();
+            // First letter of name is the key
+            var key = name[0].ToString();
 
-            if (!content["Result"].Contains("already exists"))
-            {
-                // Unique name added to the backend service
-                partitionInfo = HandleUniqueName(key, content);
-            }
-            else
-            {
-                // None unique name - not added to backend service
-                partitionInfo = HandleNonUniqueName(key);
-            }
-
-            return partitionInfo;
-        }
-
-        private PartitionInfo HandleNonUniqueName(string key)
-        {
-            PartitionInfo partitionInfo = new PartitionInfo();
+            PartitionInfo partitionInfo;
 
             if (partitions.ContainsKey(key))
             {
-                // PartitonInfo already exists for this partition key
+                // Load partition from memory
                 partitionInfo = partitions[key];
             }
             else
             {
-                // PartitonInfo doesn't exists for this partition key
-                // and we have no way of getting it...
-                // Hijack another partition or throw if none exist
-                partitionInfo = partitions.LastOrDefault().Value;
+                // Load partition from response
+                partitionInfo = CreatePartitionFromContent(key, content);
+                partitions.Add(key, partitionInfo);
             }
 
             return partitionInfo;
         }
 
-        private PartitionInfo HandleUniqueName(string key, Dictionary<string, string> content)
+        private PartitionInfo CreatePartitionFromContent(string key, Dictionary<string, string> content)
         {
-            PartitionInfo partitionInfo = new PartitionInfo();
-
-            if (!partitions.ContainsKey(key))
-            {
-                // Unique partition key...
-                partitionInfo = HandleUniquePartitionKey(key, content);
-            }
-            else
-            {
-                // Non unique partition key...
-                partitionInfo = HandleNonUniquePartitionKey(key);
-            }
-
-            return partitionInfo;
-        }
-
-        private PartitionInfo HandleNonUniquePartitionKey(string key)
-        {
-            // Set the friendly id to the existing partition index
-            return partitions[key];
-        }
-
-        private PartitionInfo HandleUniquePartitionKey(string key, Dictionary<string, string> content)
-        {
-            PartitionInfo partitionInfo = new PartitionInfo();
+            PartitionInfo partition = new PartitionInfo();
 
             // Set the partition key
-            partitionInfo.PartitionKey = key;
+            partition.PartitionKey = key;
 
             // Get the partition Id - Guid
-            partitionInfo.PartitionId = content["Processing service partition ID"];
+            partition.PartitionId = content["Processing service partition ID"];
 
             // Get the URL of the partition service
-            partitionInfo.PartitionReplicaAddress = content["Processing service replica address"];
+            partition.PartitionReplicaAddress = content["Processing service replica address"].ToLower();
 
             // Create a new index for this partition key
             var index = partitions.Count.ToString();
 
             // Set the partitions friendly Id
-            partitionInfo.FriendlyPartitionId = index;
+            partition.FriendlyPartitionId = index;
 
-            // Store the partition against the partition key
-            partitions.Add(partitionInfo.PartitionKey, partitionInfo);
-
-            return partitionInfo;
+            return partition;
         }
 
         private static Dictionary<string, string> ParseResponse(WebResponse response)

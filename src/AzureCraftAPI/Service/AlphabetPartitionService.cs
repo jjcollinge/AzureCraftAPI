@@ -1,4 +1,5 @@
-﻿using System;
+﻿using AzureCraftAPI.Model;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -11,11 +12,12 @@ namespace AzureCraftAPI.Service
     {
         private static AlphabetPartitionService singleton;
         private string baseURI = "http://localhost:8081/alphabetpartitions";
-        private Dictionary<string, string> partitions; 
+        private Dictionary<string, PartitionInfo> partitions;
 
         private AlphabetPartitionService()
         {
-            partitions = new Dictionary<string, string>();
+            // Store as <'W', PartitionInfo>
+            partitions = new Dictionary<string, PartitionInfo>();
         }
 
         public static AlphabetPartitionService GetSingleton()
@@ -27,19 +29,112 @@ namespace AzureCraftAPI.Service
 
         public PartitionInfo GetPartitionInfo(string lastname)
         {
-            PartitionInfo partitionInfo = new PartitionInfo();
+            // Create a new webrequest to hit backend service
             WebRequest request = WebRequest.Create($"{baseURI}?lastname={lastname}");
             WebResponse response = request.GetResponse();
-            Dictionary<string, string> kvps = new Dictionary<string, string>();
 
+            Dictionary<string, string> content = ParseResponse(response);
+
+            PartitionInfo partitionInfo = new PartitionInfo();
+            var key = lastname[0].ToString();
+
+            if (!content["Result"].Contains("already exists"))
+            {
+                // Unique name added to the backend service
+                partitionInfo = HandleUniqueName(key, content);
+            }
+            else
+            {
+                // None unique name - not added to backend service
+                partitionInfo = HandleNonUniqueName(key);
+            }
+
+            return partitionInfo;
+        }
+
+        private PartitionInfo HandleNonUniqueName(string key)
+        {
+            PartitionInfo partitionInfo = new PartitionInfo();
+
+            if (partitions.ContainsKey(key))
+            {
+                // PartitonInfo already exists for this partition key
+                partitionInfo = partitions[key];
+            }
+            else
+            {
+                // PartitonInfo doesn't exists for this partition key
+                // and we have no way of getting it...
+                // Hijack another partition or throw if none exist
+                partitionInfo = partitions.LastOrDefault().Value;
+            }
+
+            return partitionInfo;
+        }
+
+        private PartitionInfo HandleUniqueName(string key, Dictionary<string, string> content)
+        {
+            PartitionInfo partitionInfo = new PartitionInfo();
+
+            if (!partitions.ContainsKey(key))
+            {
+                // Unique partition key...
+                partitionInfo = HandleUniquePartitionKey(key, content);
+            }
+            else
+            {
+                // Non unique partition key...
+                partitionInfo = HandleNonUniquePartitionKey(key);
+            }
+
+            return partitionInfo;
+        }
+
+        private PartitionInfo HandleNonUniquePartitionKey(string key)
+        {
+            // Set the friendly id to the existing partition index
+            return partitions[key];
+        }
+
+        private PartitionInfo HandleUniquePartitionKey(string key, Dictionary<string, string> content)
+        {
+            PartitionInfo partitionInfo = new PartitionInfo();
+
+            // Set the partition key
+            partitionInfo.PartitionKey = key;
+
+            // Get the partition Id - Guid
+            partitionInfo.PartitionId = content["Processing service partition ID"];
+
+            // Get the URL of the partition service
+            partitionInfo.PartitionReplicaAddress = content["Processing service replica address"];
+
+            // Create a new index for this partition key
+            var index = partitions.Count.ToString();
+
+            // Set the partitions friendly Id
+            partitionInfo.FriendlyPartitionId = index;
+
+            // Store the partition against the partition key
+            partitions.Add(partitionInfo.PartitionKey, partitionInfo);
+
+            return partitionInfo;
+        }
+
+        private static Dictionary<string, string> ParseResponse(WebResponse response)
+        {
+            // Read the stream and store kvp in a Dictionary
+            Dictionary<string, string> kvps = new Dictionary<string, string>();
             using (var streamReader = new StreamReader(response.GetResponseStream()))
             {
+                // Get the string
                 string result = streamReader.ReadToEnd();
 
-                // Parse string
+                // Normalise newlines
                 result = result.Replace("<br>", "\n");
                 result = result.Replace("<p>", "\n");
 
+                // Parse the string and split into newlines
                 using (StringReader stringReader = new StringReader(result))
                 {
                     string line = string.Empty;
@@ -48,12 +143,14 @@ namespace AzureCraftAPI.Service
                         line = stringReader.ReadLine();
                         if (line != null)
                         {
+                            // Expected format: [Heading]:[Content]\n
                             var kvp = line.Split(':');
 
-                            // URL hack [protocol]:[IPorFQDN]:[port]
+                            // HACK for URL foramt: [Heading]:[protocol]:[IPorFQDN]:[port]
                             if (kvp.Length > 3)
                                 kvp[1] += kvp[2].Trim() + kvp[3].Trim();
 
+                            // Add to dictionary
                             kvps.Add(kvp[0].Trim(), kvp[1].Trim());
                         }
 
@@ -61,28 +158,7 @@ namespace AzureCraftAPI.Service
                 }
             }
 
-            if (!kvps["Result"].Contains("already exists"))
-            {
-                var startIndex = kvps["Result"].IndexOf(" ") + 1;
-                var length = kvps["Result"].Substring(startIndex).IndexOf(" ");
-                partitionInfo.Name = kvps["Result"].Substring(startIndex, length);
-                partitionInfo.PartitionId = kvps["Processing service partition ID"];
-                partitionInfo.PartitionReplicaAddress = kvps["Processing service replica address"];
-                partitionInfo.PartitionKey = partitionInfo.Name[0];
-
-                if(!partitions.ContainsKey(partitionInfo.PartitionReplicaAddress))
-                {
-                    var friendlyId = partitions.Count.ToString();
-                    partitions.Add(partitionInfo.PartitionReplicaAddress, friendlyId);
-                    partitionInfo.FriendlyPartitionId = friendlyId;
-                }
-                else
-                {
-                    partitionInfo.FriendlyPartitionId = partitions[partitionInfo.PartitionReplicaAddress];
-                }
-            }
-
-            return partitionInfo;
+            return kvps;
         }
     }
 }
